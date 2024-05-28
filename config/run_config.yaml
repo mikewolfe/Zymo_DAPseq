@@ -1,0 +1,228 @@
+---
+# Configuration file for running ChIP-seq workflow
+
+# Here is where the reference genomes are specified
+reference:
+    # name of the genome
+    ZM4:
+        # location of the genbanks. If put in the location and format shown
+        # below the pipeline will attempt to pull this file from NCBI by
+        # accession number. Each genbank MUST have a associated name which
+        # is used to name the contig pulled from it.
+        genbanks: 
+            ZM4: resources/genbanks/CP023715.1.gbk
+            pZM32: resources/genbanks/CP023716.1.gbk
+            pZM33: resources/genbanks/CP023717.1.gbk
+            pZM36: resources/genbanks/CP023718.1.gbk
+            pZM39: resources/genbanks/CP023719.1.gbk
+        # This is the fasta file for each chromosome in the genome
+        # If specified location then it is automatically parsed
+        # from the genbank.
+        fastas:
+            - results/alignment/process_genbank/ZM4/ZM4.fna
+            - results/alignment/process_genbank/ZM4/ZM32.fna
+            - results/alignment/process_genbank/ZM4/ZM33.fna
+            - results/alignment/process_genbank/ZM4/ZM36.fna
+            - results/alignment/process_genbank/ZM4/ZM39.fna
+# Options to control preprocessing rules
+preprocessing:
+    # GENERAL PARADIGM FOR CONTROLLING THINGS FOR ALL SAMPLES OR SPECIFICALLY
+    # FOR EACH SAMPLE INDIVIDUALLY
+    # Example: 
+    # Control the parameter string passed to cutadapt. Here you could change
+    # the adaptor sequences for every sample by using 
+    # cut_param_string:
+    #   value: "my string here"
+    # or by sample by using :
+    # cut_param_string: 
+    #   column: cutadapt_params
+    # and specifying the name of the column in the
+    # sample sheet that holds the strings you want to for each sample. In this
+    # example it would be the column cutadapt_params that holds a string for
+    # each sample.
+    #
+    # This same paradigm is used for all option that have a value or column
+    # specifier
+    cutadapt_pe:
+        cut_param_string:
+            value: "-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+    # Control the parameter string from trimmomatic
+    trimmomatic_pe:
+        trim_param_string:
+            value: "LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15"
+
+# Options to control alignment rules
+alignment:
+    process_genbank:
+        # Control what features are parsed from the genbank when pulling out
+        # bed files
+        features:
+            value: "CDS tRNA rRNA ncRNA"
+        qual_name: 
+            value: "gene locus_tag"
+    bowtie2_map:
+        # controls how bowtie2 does its alignments
+        bowtie2_param_string:
+            value: "--end-to-end --very-sensitive --phred33"
+        # controls samtools filtering as reads come out of bowtie2. Default
+        # is to just convert the sam records into a bam with -b
+        samtools_view_param_string:
+            value: "-b"
+
+    bowtie2_map_se:
+        # controls how bowtie2 does its alignments for single end data
+        bowtie2_param_string:
+            value: "--end-to-end --very-sensitive --phred33"
+        # controls samtools filtering as reads come out of bowtie2. Default
+        # is to just convert the sam records into a bam with -b
+        samtools_view_param_string:
+            value: "-b"
+
+
+# Options to control genome coverage calculations
+coverage_and_norm:
+
+    # what resolution in bp do you want the coverage to be calculated?
+    resolution: 5
+    # general controls - these only control what is automatically run
+    # when running the whole pipeline or module.
+    # how to normalize within a sample. Options include:
+    # RPKM, CPM, BPM, RPGC, median, and SES. See deeptools manual for
+    # details on these normalization methods.
+    within: median
+    # drop NaNs and Infs from zero coverage in input or extracted
+    # Note
+    # that bigwigs will not display properly in IGV if they have nans or infs
+    dropNaNsandInfs: true
+    # Robust Z scale the log2ratio of extracted to input
+    RobustZ: true
+    
+
+# Options to control quality control
+quality_control:
+    qc_to_run:
+        - "fastqc"
+        - "coverage"
+        - "correlation"
+        - "pe_fragment"
+    # what column to group samples by for ChIP-QC output plots?
+    group_by: genome
+    # control how reads are filter for ALL samples
+    bamCoverage_params: " " 
+    # Determine sampling parameters for fingerprint plots. These are good
+    # defaults for E. coli
+    plotFingerprint:
+        binsize: 500
+        num_samps: 9200
+    # Determine bin size for coverage calcs. This controls PCA and correlation
+    # as well
+    multiBamSummary:
+        binsize: 1000
+    # Determine sampling parameters for coverage calculations
+    plotCoverage:
+        num_samps: 1000
+    bamPEFragSize:
+        bin_dist: 10000
+    frags_per_contig:
+        samtools_param_string:
+            column: "samtools_params"
+
+
+
+# Options to control peak calling
+# run with run_peak_calling
+peak_calling:
+    macs2_all:
+        peak_caller: "macs2"
+        # filter out the samples you want to run based on metadata
+        filter: 'input_sample != "" and not input_sample.isnull()'
+        # Macs2 runs directly on the bam files for each sample so
+        # a filesignature does not need to specified.
+
+        # specify a parameter string used to control macs2
+        # -g EFFECTIVE_GENOME_SIZE is
+        # automatically determined --call-summits is always specified.
+        macs2_param_string: 
+            value: "-f BAMPE"
+        peak_coverage:
+            cov_filesig: 
+                value: "results/coverage_and_norm/deeptools_coverage/%s_raw.bw"
+            peaks_filesig: 
+                value: "results/peak_calling/macs2_all/macs2/%s_peaks.narrowPeak"
+            upstream: 200
+            downstream: 200
+
+
+# Options to control motif calling
+# run with run_motif_calling
+motif_calling:
+    # Can make different models to try out different motif callers or params
+    macs2_all:
+        # Which motif caller? Supports meme and streme
+        motif_caller: "streme"
+        # Which samples to run on?
+        filter: 'input_sample != "" and not input_sample.isnull()'
+        # Which file to run on?
+        filesignature: "results/peak_calling/macs2_all/macs2/%s_summits.bed"
+        # Parameters for the background markov model
+        get_markov_param_string:
+            value: "-dna -m 2"
+        # Parameters for the streme motif caller
+        streme_param_string:
+            value: "--dna --minw 8 --maxw 30 --nmotifs 2"
+        # Parameters controlling how the sequences are pulled from the bed
+        get_peak_seqs_param_string:
+            value: "--upstream 30 --downstream 30"
+
+    # Same thing but running a different motif finder
+    macs2_all_meme:
+        motif_caller: "meme"
+        filter: 'input_sample != "" and not input_sample.isnull()'
+        filesignature: "results/peak_calling/macs2_all/macs2/%s_summits.bed"
+        get_markov_param_string:
+            value: "-dna -m 0"
+        get_peak_seqs_param_string:
+            value: "--upstream 30 --downstream 30"
+
+# Options to control variant calling. I.e. running breseq on the input samples
+variant_calling:
+    # Which samples do you want to run variant calling on. Typically
+    # only the input samples as specified by having no sample name in
+    # the "input_sample" column
+    filter: "not sample_name.isnull()"
+    # Which reference to compare against. Reference must be defined above
+    # in the reference section. Can specify a single value for all samples
+    # or a column in the metadata sheet to define a reference for each
+    # sample
+    reference:
+        column: "genome"
+
+
+# Control for the postprocessing submodule
+postprocessing:
+    # summarizes values by region
+    bwtools_query:
+        # Can specify different "models" to run by naming them here
+        # Model 1 - look at the full coverage for all genes
+        all_genes_cov:
+            # which regions to use? Specifying a file like this has the pipeline
+            # parse it from your genbank file given the process genbank
+            # parameters above in the alignment section
+            regions: "results/alignment/combine_bed/U00096.3/U00096.3.bed"
+            # which files to use? This file signature will substitute in
+            # a sample name for the %s
+            filesignature: "results/coverage_and_norm/deeptools_coverage/%s_BPM.bw"
+            # how many bp upstream (5') of a feature to include
+            upstream: 0
+            # how many bp downstream (3') of a feature to include
+            downstream: 0
+            # what resolution to query data (shouldn't be lower than the
+            # resolution of your file
+            res : 5
+            # Specify how you want the coordinates to be reported in. Options
+            # include "relative_start", "relative_end", "relative_center" and
+            # "absolute". Default is "absolute"
+            coord: "relative_start"
+            # How do you want to summarize your data? (identity gives every data
+            # point in tidy format)
+            summarize: "identity"
