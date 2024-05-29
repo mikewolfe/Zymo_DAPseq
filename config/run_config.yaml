@@ -20,10 +20,10 @@ reference:
         # from the genbank.
         fastas:
             - results/alignment/process_genbank/ZM4/ZM4.fna
-            - results/alignment/process_genbank/ZM4/ZM32.fna
-            - results/alignment/process_genbank/ZM4/ZM33.fna
-            - results/alignment/process_genbank/ZM4/ZM36.fna
-            - results/alignment/process_genbank/ZM4/ZM39.fna
+            - results/alignment/process_genbank/ZM4/pZM32.fna
+            - results/alignment/process_genbank/ZM4/pZM33.fna
+            - results/alignment/process_genbank/ZM4/pZM36.fna
+            - results/alignment/process_genbank/ZM4/pZM39.fna
 # Options to control preprocessing rules
 preprocessing:
     # GENERAL PARADIGM FOR CONTROLLING THINGS FOR ALL SAMPLES OR SPECIFICALLY
@@ -96,6 +96,16 @@ coverage_and_norm:
     dropNaNsandInfs: true
     # Robust Z scale the log2ratio of extracted to input
     RobustZ: true
+
+    # rule specific controls
+    # Each of these can be specified either as a single value for every sample
+    # or as a column in the sample_sheet using column: column_name
+    deeptools_coverage:
+        bamCoverage_param_string:
+            # Rather than set this for all samples
+            #value: "--samFlagInclude 67 --extendReads"
+            # We will instead set it for each sample by specifying a column
+            value: "--samFlagInclude 67 --samFlagExclude 1024 --extendReads"
     
 
 # Options to control quality control
@@ -208,7 +218,7 @@ postprocessing:
             # which regions to use? Specifying a file like this has the pipeline
             # parse it from your genbank file given the process genbank
             # parameters above in the alignment section
-            regions: "results/alignment/combine_bed/U00096.3/U00096.3.bed"
+            regions: "results/alignment/combine_bed/ZM4/ZM4.bed"
             # which files to use? This file signature will substitute in
             # a sample name for the %s
             filesignature: "results/coverage_and_norm/deeptools_coverage/%s_BPM.bw"
