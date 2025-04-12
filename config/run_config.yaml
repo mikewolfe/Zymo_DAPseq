@@ -113,7 +113,6 @@ quality_control:
     qc_to_run:
         - "fastqc"
         - "coverage"
-        - "correlation"
         - "pe_fragment"
     # what column to group samples by for ChIP-QC output plots?
     group_by: genome
