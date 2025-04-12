@@ -1,0 +1,890 @@
+```{r}
+library(tidyverse)
+library(patchwork)
+library(ggrepel)
+library(ggbeeswarm)
+```
+Helper functions
+
+```{r}
+# This function takes the data and its corresponding bed file and converts
+# the coordinates to relative coordinates 
+to_relative_coord <- function(d, bed, res = 5){
+   d %>% left_join(bed, by = "region") %>%
+    mutate(coord = if_else(strand == "+", 
+                           # Convert to coordinate to relative coordinate
+                           # Must force the start and end coordinates of the
+                           # bed file into the correct resolution
+                           coord - (start %/% res)*res, 
+                           (end %/% res)*res - coord
+                           )
+    )
+}
+```
+
+
+
+## Annotate each peak to a promoter
+```{r}
+d <- read_tsv("peak_to_promoters.tsv", col_names = c("chrm", "peak_start", "peak_end", "peak_name", "peak_enrichment", "chrm_prom", "prom_start", "prom_end", "promoter", "prom_value", "prom_strand", "distance")) %>%
+    separate(peak_name, into = c("TF", "peak_id"), sep = "_") %>%
+    mutate(TF = if_else(TF == "ZMO01164", "ZMO1164", TF))
+head(d)
+```
+
+
+```{r}
+md <- readxl::read_xlsx("../2022_zymo_proteins_data.xlsx")
+md
+```
+
+
+```{r}
+d <- left_join(d, md %>% select(locus_tag, simple_name, class) %>% rename(TF=locus_tag), by = "TF")
+head(d)
+```
+
+```{r}
+class_colors <- list("TF homology" = "#1D5579", 
+                     "NAP homology" = "#B62A0F",
+                     "Sigma factor" = "#E6BC05",
+                     "Predicted DBD" = "#588818")
+```
+
+```{r}
+d %>% group_by(class) %>%
+    summarize(n = n_distinct(TF)) %>%
+    mutate(class = fct_reorder(class, n)) %>%
+    ggplot(aes(y = class, x = n, fill = class)) + 
+    geom_col(show.legend = FALSE) + theme_classic() +
+    scale_fill_manual(values = class_colors) + 
+    geom_text(aes(label = n), hjust = 2, color = "white") +
+    labs(y = "", x = "# of proteins tested",
+         title = "Selected Proteins from Zymomonas Mobilis")
+```
+
+```{r}
+(TFs <- d %>% filter(class == "TF homology") %>%
+    group_by(simple_name, class) %>%
+    summarize(n = n()) %>% ungroup() %>%
+    mutate(simple_name = fct_reorder(simple_name, n)) %>%
+    ggplot(aes(y = simple_name, x = n, fill = class)) + 
+    geom_col(show.legend = FALSE) + theme_classic(base_size =16) +
+    scale_fill_manual(values = class_colors) + 
+    labs(y = "", x = "Total peak summits identified",
+         title = "Proteins with TF homology") +
+    scale_x_log10() + annotation_logticks(sides = "b"))
+(DBDs <- d %>% filter(class == "Predicted DBD") %>%
+    group_by(simple_name, class) %>%
+    summarize(n = n()) %>% ungroup() %>%
+    mutate(simple_name = fct_reorder(simple_name, n)) %>%
+    ggplot(aes(y = simple_name, x = n, fill = class)) + 
+    geom_col(show.legend = FALSE) + theme_classic(base_size = 16) +
+    scale_fill_manual(values = class_colors) + 
+    labs(y = "", x = "Total peak summits identified",
+         title = "Proteins with a predicted DBD") +
+    scale_x_log10() + annotation_logticks(sides = "b"))
+(Sigma <- d %>% filter(class == "Sigma factor") %>%
+    group_by(simple_name, class) %>%
+    summarize(n = n()) %>% ungroup() %>%
+    mutate(simple_name = fct_reorder(simple_name, n)) %>%
+    ggplot(aes(y = simple_name, x = n, fill = class)) + 
+    geom_col(show.legend = FALSE) + theme_classic(base_size = 16) +
+    scale_fill_manual(values = class_colors) + 
+    labs(y = "", x = "Total peak summits identified",
+         title = "Sigma factors") +
+    scale_x_log10() + annotation_logticks(sides = "b"))
+
+(NAP <- d %>% filter(class == "NAP homology") %>%
+    group_by(simple_name, class) %>%
+    summarize(n = n()) %>% ungroup() %>%
+    mutate(simple_name = fct_reorder(simple_name, n)) %>%
+    ggplot(aes(y = simple_name, x = n, fill = class)) + 
+    geom_col(show.legend = FALSE) + theme_classic(base_size = 16) +
+    scale_fill_manual(values = class_colors) + 
+    labs(y = "", x = "Total peak summits identified",
+         title = "Proteins with NAP homology") +
+    scale_x_log10() + annotation_logticks(sides = "b"))
+
+
+```
+```{r, fig.height = 8}
+TFs | (DBDs /Sigma / NAP) + plot_layout(heights = c(2,1,1)) & coord_cartesian(xlim = c(1, 1100)) 
+```
+
+
+```{r}
+ggsave("peak_summits_per_gene.svg", device = grDevices::svg, units = "in", height = 9.5, width = 12)
+```
+
+```{r}
+(zmo_prom_main <- d %>% group_by(TF, class, simple_name) %>%
+    summarize(near_promoter = sum(abs(distance) <= 200),
+              total = n(),
+              frac_near_promoter = if_else(total > 0, near_promoter/total,0),
+              ) %>%
+    mutate(TF = fct_reorder(TF, frac_near_promoter)) %>%
+    ggplot(aes(y = total, x = frac_near_promoter, color = class)) + geom_point(size = 3) +
+    scale_y_log10() + annotation_logticks(sides = 'l') + 
+    geom_text(data = . %>% filter(TF %in% c("ZMO1787", "ZMO1336", "ZMO0199",
+                                                  "ZMO0203")),
+                    aes(label = simple_name), show.legend = FALSE) +
+    theme_bw(base_size = 16) + labs(x = "Fraction of summits within 200 bp of a promoter",
+    y = "# of peak summits",
+    title = "Many Zymomonas TFs bind within 200 bp of promoters",
+    color = "Protein Class") +
+    scale_color_manual(values = class_colors) + theme(legend.position = "top") + guides(color = guide_legend(nrow = 2)))
+```
+
+
+```{r}
+(zmo_prom_lower <- d %>% filter(abs(distance) <= 200) %>% 
+    filter(TF %in% c("ZMO1787", "ZMO1336", "ZMO0199","ZMO0203")) %>%
+    ggplot(aes(x = distance, fill = class)) + 
+    geom_histogram(show.legend = FALSE, bins = 30) + facet_wrap(~ simple_name, scales = "free_y") + theme_bw(base_size = 16) + geom_vline(xintercept = 0, linetype = "dashed") +
+        scale_fill_manual(values = class_colors) +
+    labs(x = "Distance between peak summit and closest promoter",
+         y = "# of peak summits",
+         title = "Zymo TFs show positional bias relative to promoters"))
+```
+
+```{r, fig.width = 4, fig.height = 4}
+zmo_prom_main/zmo_prom_lower
+```
+```{r}
+ggsave("zmo_tf_bind_near_prom.pdf", height = 11, width = 7, units = "in")
+```
+
+
+```{r}
+promoter_to_gene <- read_tsv("2020_Vera_promoter_gene_pairs.tsv", col_names = c("promoter", "gene"))
+head(promoter_to_gene)
+```
+
+```{r}
+d <- left_join(d, promoter_to_gene, by = "promoter")
+```
+
+```{r}
+d %>% filter(abs(distance) <= 200) %>% select(-c(peak_id, chrm_prom, prom_value)) #%>%
+    #filter(TF == "ZMO1733" | gene == "ZMO1733") %>% write_tsv("ZMO1733_DAPseq_regulon.tsv")
+    #write_tsv("DAPseq_peak_to_promoter_mapping.tsv")
+```
+
+
+
+```{r}
+d %>% filter(abs(distance) <= 200) %>%
+    filter(gene %in% (d %>% pull(TF) %>% unique())) %>% group_by(TF, simple_name) %>%
+    summarize(n= n()) %>% ungroup() %>%
+    left_join(., d %>% select(TF, class) %>% unique(), by ="TF") %>%
+    mutate(simple_name = fct_reorder(simple_name, n)) %>%
+    ggplot(aes(y = simple_name, x = n, fill = class)) + geom_col() + theme_bw()
+```
+
+
+
+
+```{r}
+all_sites <- read_tsv("../../results/peak_calling/macs2_all/peak_coverage/ZMO0373_peak_coverage.tsv.gz")
+all_sites %>%
+    group_by(region) %>%
+    mutate(max_coord = coord[which.max(ZMO0373)],
+           relative_coord = coord - max_coord) %>%
+    filter(abs(relative_coord) <= 200) %>%
+    ggplot(aes(x = relative_coord, y = ZMO0373, group = region)) + geom_line(alpha = 0.5) + theme_bw()
+```
+
+```{r}
+d %>% filter(abs(distance) <=200) %>%
+    filter(TF == gene)
+```
+
+
+
+```{r}
+d %>% filter(abs(distance) <= 200) %>%
+    group_by(promoter, gene) %>%
+    summarize(n()) %>% arrange(-`n()`)
+```
+
+
+## Annotate each promoter to a peak
+
+```{r}
+d2 <- read_tsv("promoters_to_peaks.tsv", col_names = 
+                   c("chrm", "prom_start", "prom_end", "promoter", "prom_value", "prom_strand", 
+                     "chrm_peak", "peak_start", "peak_end", "peak_name", "peak_enrichment", "distance"),
+               col_types = "????????????", na = "NA") %>%
+    separate(peak_name, into = c("TF", "peak_id"), sep = "_") 
+d2
+```
+
+```{r}
+d2 %>% filter(promoter == "TSS_3564") %>% arrange(-peak_enrichment)
+```
+
+Get only pairs within 1000 bp
+```{r}
+prom_tf_pair <- d2 %>% filter(TF != "." & abs(distance) <= 200)
+prom_tf_pair
+```
+
+Add Promoter to gene annotation
+```{r}
+(prom_tf_pair <- left_join(prom_tf_pair, promoter_to_gene, by = "promoter"))
+```
+
+Add metadata about TFs
+```{r}
+(prom_tf_pair <- left_join(prom_tf_pair, md %>% select(locus_tag, simple_name, class) %>% rename(TF=locus_tag, TF_class = class), by = "TF"))
+```
+
+Regulation by gene by different TFs
+```{r}
+prom_tf_pair %>% group_by(gene) %>% summarize(n = n_distinct(TF)) %>%
+    mutate(gene = fct_reorder(gene, n)) %>%
+    ggplot(aes(y = gene, x = n)) + geom_col()
+```
+
+
+```{r}
+prom_tf_pair %>% group_by(simple_name, TF_class) %>% summarize(n = n_distinct(gene)) %>% ungroup() %>% 
+    mutate(simple_name = fct_reorder(simple_name, n)) %>%
+    ggplot(aes(y = simple_name, x = n)) + 
+    geom_col(aes(fill = TF_class)) +
+    geom_point(data = . %>% filter(n == 1), aes(color = TF_class),
+               show.legend = FALSE) +
+    scale_color_manual(values = class_colors) +
+    scale_fill_manual(values = class_colors) +
+    theme_classic(base_size = 16) +
+    labs(x = "# of genes in regulon", y = "", fill = "Protein class",
+         title = "Zymo TFs show a wide range of regulon sizes") +
+    theme_classic() + scale_x_log10() + annotation_logticks(sides = 'b') +
+    theme(legend.position = "bottom") +
+    guides(fill = guide_legend(nrow = 2))
+```
+
+
+```{r}
+ggsave("zymo_regulon_size.svg", device = grDevices::svg, units = "in", height = 11, width = 6)
+```
+
+```{r}
+prom_tf_pair %>% group_by(gene, promoter) %>% summarize(n = n_distinct(TF)) %>%
+    arrange(-n)
+```
+
+
+```{r}
+(regulatory_tfs <- prom_tf_pair %>% filter(promoter %in% c("TSS_0396")) %>% select(TF, TF_class))
+```
+
+```{r}
+cov <- read_tsv("../../results/postprocessing/bwtools_query/ZM4_genes_promoters_cov_bwtools_query.tsv.gz") %>% filter(region == "TSS_0396")
+head(cov)
+```
+
+```{r}
+cov %>% pivot_longer(-c(region, coord), names_to = "TF", values_to = "coverage") %>%
+    filter(TF %in% (regulatory_tfs %>%pull(TF)) | TF == "Combined_Control") %>%
+    left_join(., regulatory_tfs, by = "TF") %>%
+    ggplot(aes(x = coord, y = coverage, color = TF, group = TF)) + 
+    geom_line(data = . %>% filter(TF != "Combined_Control")) + 
+                  theme_bw() +
+    geom_line(data = . %>% filter(TF == "Combined_Control"), color = "Black") 
+```
+
+```{r}
+reg_table <- prom_tf_pair %>% group_by(gene, TF) %>% summarize(peak_enrichment = mean(peak_enrichment)) %>% ungroup() %>%
+    pivot_wider(names_from = TF, values_from = peak_enrichment) %>% replace(is.na(.), 0)
+reg_table
+```
+
+```{r}
+cluster_regulons <- hclust(dist(reg_table %>% column_to_rownames("gene") %>% t()))
+cluster_regulons
+```
+```{r}
+cluster_names_tf <- cluster_regulons$labels[cluster_regulons$order]
+```
+
+```{r}
+cluster_genes <- hclust(dist(reg_table %>% column_to_rownames("gene")))
+cluster_names_gene <- cluster_genes$labels[cluster_genes$order]
+```
+
+
+```{r}
+reg_table %>% pivot_longer(-gene) %>%
+    mutate(name = fct_relevel(name, levels = list(cluster_names_tf))) %>%
+    mutate(gene = fct_relevel(gene, levels = list(cluster_names_gene))) %>%
+    mutate(value = log10(value + 1)) %>%
+               ggplot(aes(y = gene, x = name, fill = value)) + geom_tile() +
+    scale_fill_viridis_c()
+```
+
+
+
+
+```{r}
+(coreg<- reg_table %>% select("ZMO1787", "ZMO0199", "ZMO1876", "gene") %>% 
+    left_join(annots %>% select(gene, common_name), by = "gene") %>%
+    mutate(common_gene = if_else(!is.na(common_name), 
+                                 str_c(gene, "(", common_name, ")"),
+                                 gene)) %>%
+    mutate(labelled = if_else(ZMO1876 > 0, common_gene, "")) %>%
+    mutate(size = if_else(ZMO1876 > 0, "3", "2")) %>%
+    ggplot(aes(x = ZMO1787 +1, y = ZMO0199 + 1)) + geom_point(aes(color = ZMO1876, size = size)) +
+    scale_x_log10(expand = expand_scale(mult = c(0.1,0.2))) + 
+     scale_y_log10(expand = expand_scale(mult = c(0.1,0.1))) + annotation_logticks(sides = "bl") + 
+    geom_text(aes(label = labelled)) +
+    scale_color_viridis_c() + theme_bw(base_size = 16) +
+     scale_size_manual(values = c("3" = 3, "2" = 2), guide = "none") +
+     labs(x = "ZMO1787 (0.93) Peak Signal",
+          y = "ZMO0199 (LexA) Peak Signal",
+          color = "ZMO1876 (0.93)\nPeak Signal",
+          title = "Predicted DBDs ZMO1876 & ZMO1787 bind\ntogether with ZMO0199 (LexA) at key SOS genes") + theme(legend.position = "top")) 
+    
+```
+
+```{r}
+ggsave("SOS-regulon.pdf", width = 8, 
+       height = 5, units = "in")
+```
+
+
+```{r}
+sos_colors = c("ZMO1787"= "#FAB947",
+               "ZMO0199" = "#535D94",
+               "ZMO1876" = "#34AEC1",
+               "ZMO0199 ZMO1876" = "#7E1261",
+               "ZMO1787 ZMO0199" = "#B72E03",
+               "ZMO1787 ZMO0199 ZMO1876" = "forestgreen")
+```
+
+```{r}
+(sos_reg2 <- reg_table %>% select("ZMO1787", "ZMO0199", "ZMO1876", "gene") %>%
+    pivot_longer(-gene) %>% filter(value > 0) %>%
+    group_by(gene) %>%
+    summarize(class = str_c(name, collapse = " ")) %>%
+    group_by(class) %>%
+    summarize(n = n()) %>% 
+    mutate(ZMO1787 = if_else(str_detect(class, "ZMO1787"), "ZMO1787", as.character(NA))) %>%
+    mutate(ZMO0199 = if_else(str_detect(class, "ZMO0199"), "ZMO0199", as.character(NA))) %>%
+    mutate(ZMO1876 = if_else(str_detect(class, "ZMO1876"), "ZMO1876", as.character(NA))) %>% pivot_longer(-c(class,n)) %>%
+    filter(!is.na(value)) %>% 
+    group_by(value) %>%
+    mutate(perc = n/sum(n)) %>%
+    ggplot(aes(y = value, x = perc, fill = class)) + geom_col()+
+    scale_fill_manual(values = sos_colors) + theme_classic(base_size = 16)+
+    labs(y = "", x = "Fraction of Regulon",
+         fill = "Regulon\nOverlap",
+         title = "Regulons of predicted DBDs ZMO1876 & ZMO1787\noverlap with SOS-regulator ZMO0199 (LexA)") +
+    theme(legend.position = "bottom") +
+    guides(fill = guide_legend(nrow = 3)))
+
+    #mutate_at(vars(ZMO1787, ZMO0199, ZMO1876), function(x) x > 0) %>%
+    #group_by(ZMO1787, ZMO0199, ZMO1876) %>% tally() 
+```
+```{r, fig.width = 6, fig.height = 12}
+coreg/sos_reg2 + plot_layout(heights = c(2, 1))
+```
+
+
+```{r}
+ggsave("regulon_overlap.pdf", width = 7, height = 12, units = "in")
+```
+
+```{r}
+(sos_gene_classes <- reg_table %>% select(gene, "ZMO1787", "ZMO0199", "ZMO1876") %>% mutate(class = case_when(ZMO1787 > 0 & ZMO0199 > 0 & ZMO1876 > 0 ~ 5,
+                                                                                   ZMO1787 > 0 & ZMO0199 > 0 ~ 4,
+                                                                                   ZMO0199 > 0 & ZMO1876 > 0 ~ 3,
+                                                                                   ZMO1787 > 0 ~ 2,
+                                                                                   ZMO0199 > 0 ~ 1,
+                                                                                   TRUE ~ 0)) %>%
+    select(gene, class)) %>%
+    write_tsv("SOS_regulon.tsv")
+```
+
+```{r}
+sos_gene_classes <- sos_gene_classes %>% left_join(promoter_to_gene, by = "gene")
+```
+
+```{r}
+all_promoters <- read_tsv("../../../2020_vera_promoters/2020_Vera_promoter_gene_pairs.bed", col_names = c("chrm", "start", "end", "region", "value", "strand"))
+all_promoters
+```
+
+
+```{r}
+sos_cov <- read_tsv("../../results/postprocessing/bwtools_query/ZM4_genes_promoters_cov_bwtools_query.tsv.gz") %>% 
+    filter(region %in% (sos_gene_classes %>% filter(class > 0) %>% pull(promoter)))
+head(sos_cov)
+```
+
+
+```{r}
+sos_cov <- to_relative_coord(sos_cov, all_promoters)
+sos_cov
+```
+
+
+```{r}
+sos_cov <- sos_cov %>% left_join(sos_gene_classes %>% select(region = promoter, gene, class), by = "region") #%>%
+ #select(promoter = region, coord, gene, class, ZMO1787, ZMO0199, ZMO1876, Combined_Control)
+sos_cov
+```
+
+
+```{r}
+prom_tf_pair %>% right_join(sos_gene_classes %>% select(promoter, class), by = "promoter") %>%
+    filter(gene %in% c("ZMO0199", "ZMO1787", "ZMO1876", "ZMO0934", "ZMO1166", "ZMO1588", "ZMO1156", "ZMO2060")) %>% filter(distance <= 200) %>% 
+    #filter(TF %in% c("ZMO0199", "ZMO1787", "ZMO1876")) %>% 
+    group_by(gene) %>%
+    summarize(promoter = promoter[which.min(distance)])
+```
+
+
+```{r}
+sos_colors2 = c("ZMO1787"= "#FAB947",
+               "ZMO0199" = "#535D94",
+               "ZMO1876" = "#34AEC1",
+               "Combined_Control" = "black",
+               "Other" = "grey80")
+
+```
+
+
+
+
+```{r, fig.height = 12, fig.width = 6}
+sos_cov %>% pivot_longer(ZMO0675:Combined_Control, values_to= "signal") %>%
+    filter(region %in% c("TSS_0396", "TSS_2107", "TSS_2636", "TSS_2612",
+                         "TSS_3564", "TSS_2618")) %>%
+    mutate(show_name = if_else(name  %in% c("ZMO0199", "ZMO1787", "ZMO1876", "Combined_Control"), name, "Other")) %>%
+    left_join(annots %>% select(gene, common_name), by = "gene") %>%
+    mutate(common_gene = if_else(!is.na(common_name), 
+                                 str_c(gene, " (", common_name, ")"),
+                                 gene)) %>%
+    group_by(common_gene, name, show_name) %>%
+    mutate(signal = signal/min(signal + 1, na.rm = TRUE)) %>%
+    filter(max(signal) > 200 | name %in% c("ZMO0199", "ZMO1787", "ZMO1876", "Combined_Control")) %>%
+    ggplot(aes(x = coord, y = signal, color = show_name, group = name)) + geom_line(size = 2) + facet_wrap(~common_gene, scales = "free", ncol = 1) + theme_classic(base_size = 16) +
+    coord_cartesian(xlim = c(-500, 500)) + 
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    scale_color_manual(values = sos_colors2) +
+    labs(y = "Local enrichment", x = "Coordinates relative to TSS",
+         color = "Protein",
+         title = "Co-binding at select SOS-response promoters") +
+    theme(legend.position = "bottom") +
+    guides(color = guide_legend(nrow = 2))
+```
+
+```{r}
+ggsave("regulated_genes.pdf", height = 12, width = 6, units = "in")
+```
+
+```{r}
+prom_tf_pair %>% group_by(gene, TF) %>% summarize(peak_enrichment = mean(peak_enrichment)) %>% ungroup() %>%
+    pivot_wider(names_from = TF, values_from = peak_enrichment) %>% select(gene, ZMO1787) %>% 
+    mutate(discretized = cut(ZMO1787, quantile(ZMO1787, probs = seq(0, 1, length.out = 2), na.rm = TRUE), labels = FALSE)) %>%
+    replace_na(list(ZMO1787 = 0, discretized = 0)) %>%
+    #ggplot(aes(x =ZMO1787)) + geom_histogram() + facet_wrap(~discretized, ncol =1) + scale_x_log10() + annotation_logticks(sides = 'b')
+    select(gene, discretized) %>% 
+    full_join(promoter_to_gene %>% distinct(gene), by= "gene") %>%
+    replace_na(list(discretized = 0)) %>%
+    write_tsv("ZMO1787_regulon.tsv")
+```
+```{r}
+prom_tf_pair %>% group_by(gene, TF) %>% summarize(peak_enrichment = mean(peak_enrichment)) %>% ungroup() %>%
+    pivot_wider(names_from = TF, values_from = peak_enrichment) %>% select(gene, ZMO0199) %>% 
+    mutate(discretized = cut(ZMO0199, quantile(ZMO0199, probs = seq(0, 1, length.out = 2), na.rm = TRUE), labels = FALSE)) %>%
+    replace_na(list(ZMO0199 = 0, discretized = 0)) %>%
+    #ggplot(aes(x =ZMO0199)) + geom_histogram() + facet_wrap(~discretized, ncol =1) + scale_x_log10() + annotation_logticks(sides = 'b')
+    select(gene, discretized) %>%
+    full_join(promoter_to_gene %>% distinct(gene), by= "gene") %>%
+    replace_na(list(discretized = 0)) %>%
+    write_tsv("ZMO0199_regulon.tsv")
+```
+
+```{r}
+prom_tf_pair %>% group_by(gene, TF) %>% summarize(peak_enrichment = mean(peak_enrichment)) %>% ungroup() %>%
+    pivot_wider(names_from = TF, values_from = peak_enrichment) %>% select(gene, ZMO0373) %>% 
+    mutate(discretized = cut(ZMO0373, quantile(ZMO0373, probs = seq(0, 1, length.out = 2), na.rm = TRUE), labels = FALSE)) %>%
+    replace_na(list(ZMO0373 = 0, discretized = 0)) %>%
+    #ggplot(aes(x =ZMO0373)) + geom_histogram() + facet_wrap(~discretized, ncol =1) + scale_x_log10() + annotation_logticks(sides = 'b')
+    select(gene, discretized) %>%
+    full_join(promoter_to_gene %>% distinct(gene), by= "gene") %>%
+    replace_na(list(discretized = 0)) %>%
+    write_tsv("ZMO0373_regulon.tsv")
+```
+
+```{r}
+prom_tf_pair %>% group_by(gene, TF) %>% summarize(peak_enrichment = mean(peak_enrichment)) %>% ungroup() %>%
+    pivot_wider(names_from = TF, values_from = peak_enrichment) %>% select(gene, ZMO0203) %>% 
+    mutate(discretized = cut(ZMO0203, quantile(ZMO0203, probs = seq(0, 1, length.out = 2), na.rm = TRUE), labels = FALSE)) %>%
+    replace_na(list(ZMO0203 = 0, discretized = 0)) %>%
+    #ggplot(aes(x =ZMO0203)) + geom_histogram() + facet_wrap(~discretized, ncol =1) + scale_x_log10() + annotation_logticks(sides = 'b')
+    select(gene, discretized) %>%
+    full_join(promoter_to_gene %>% distinct(gene), by= "gene") %>%
+    replace_na(list(discretized = 0)) %>%
+    write_tsv("ZMO0203_regulon.tsv")
+```
+
+
+How many genes are regulated per TF
+```{r, fig.height = 5}
+(genes_per_TF <- prom_tf_pair %>% group_by(TF) %>%
+    summarize(Genes_per_TF = n_distinct(gene)) %>% ungroup()) %>%
+    mutate(TF= fct_reorder(TF, Genes_per_TF)) %>%
+    ggplot(aes(x = Genes_per_TF, y = TF)) + geom_col() + theme_bw()
+```
+
+```{r}
+(connections <- prom_tf_pair %>% 
+     filter(gene %in% (prom_tf_pair %>% pull(TF) %>% unique())) %>%
+     group_by(gene, TF, TF_class) %>% 
+     summarize(avg_height = mean(peak_enrichment)) %>% ungroup %>%
+    select(name = TF, TF_class, avg_height, from = TF, to = gene))
+```
+
+```{r}
+(overall_network <- prom_tf_pair %>% select(name = TF, TF_class, from = TF, to = gene))
+```
+
+
+
+```{r}
+library(ggraph)
+library(tidygraph)
+```
+
+```{r}
+connections %>% select(name, TF_class) %>% distinct()
+```
+
+
+```{r}
+(graph <- as_tbl_graph(connections) %>%
+     activate(nodes) %>%
+     left_join(., genes_per_TF %>% rename(name=TF), by = "name") %>%
+     activate(nodes) %>%
+    left_join(., md %>% select(name = locus_tag, TF_class= class) %>% distinct(), by = "name"))
+```
+
+
+````{r, fig.height = 11, fig.width = 7}
+(p <- graph %>%
+    activate(edges) %>%
+    mutate(edge_type = edge_is_from()) %>%
+     ggraph(layout = "linear", circular = TRUE) +
+     geom_edge_arc(aes(alpha = log10(avg_height))) +
+     geom_node_point(aes(size = Genes_per_TF, color = TF_class)) +
+    scale_color_manual(values = class_colors, guide = "none") + 
+    coord_fixed() + theme_classic(base_size = 16) +
+     theme(legend.position = "bottom", legend.box = "vertical", 
+           axis.line.x = element_blank(),
+           axis.line.y = element_blank(),
+           axis.ticks.x = element_blank(),
+           axis.ticks.y = element_blank(),
+           axis.text.y = element_blank(),
+           axis.text.x = element_blank()) ) 
+ 
+p + geom_node_text(aes(label = name, color = TF_class),nudge_x = p$data$x * .1, nudge_y = p$data$y * .1, show.legend = FALSE) + labs(color = "Protein Class", size = "Regulon Size", edge_alpha = "log10(peak signal)", title = "Zymomonas Mobilis TF-TF network is highly interconnected", x = "", y = "") +
+    
+    scale_x_continuous(expand = expansion(mult = c(0.1, 0.1)))
+    #scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +
+    #theme(plot.margin = unit(c(0,0,0,0), "cm"))
+
+```
+
+```{r}
+ggsave("Zymo_tf_tf_network.pdf", height = 11, width = 7, units = 'in')
+```
+
+
+```{r}
+sos_colors3 = c("ZMO1787"= "#FAB947",
+               "ZMO0199" = "#535D94",
+               "ZMO1876" = "#34AEC1",
+               "Other" = "black")
+
+```
+
+
+```{r, fig.height = 5, fig.width = 5}
+(sos_p1 <- graph %>% activate(edges) %>%
+    mutate(selected_edge = from == 1 | from == 4 | from == 5,
+           colors = case_when(from == 1 ~ "ZMO0199",
+                              from == 4 ~ "ZMO1787",
+                              from == 5 ~ "ZMO1876",
+                              TRUE ~ "Other")) %>%
+     activate(nodes) %>%
+     mutate(node_color = 
+                if_else(name %in% c("ZMO0199", "ZMO1787", "ZMO1876"), name,
+                        "Other")) %>%
+    ggraph(layout = 'linear', circular = TRUE) + 
+    geom_edge_arc(aes(filter = selected_edge, color = colors,
+                      alpha = log10(avg_height),
+                      show.legend = FALSE), 
+                  arrow = arrow(length = unit(3, "mm")), width = 2)+ 
+    geom_node_point(aes(label = name, size = Genes_per_TF,
+                        color = node_color)) + 
+    geom_edge_loop(aes(filter = selected_edge, color = colors,
+                       alpha = log10(avg_height)), width = 2,
+                   show.legend = FALSE) +
+    geom_node_text(data = . %>% 
+                       filter(name %in% c("ZMO0199", "ZMO1787", "ZMO1876")),
+                   aes(label = name, color = name), show.legend = FALSE) +
+    theme_classic(base_size = 16) +
+    coord_fixed() +
+     theme(legend.position = "bottom", legend.box = "vertical", 
+           axis.line.x = element_blank(),
+           axis.line.y = element_blank(),
+           axis.ticks.x = element_blank(),
+           axis.ticks.y = element_blank(),
+           axis.text.y = element_blank(),
+           axis.text.x = element_blank()) + 
+    labs(x = "", y = "", title = "SOS-reponse controls many Zymo TFs",
+         subtitle = "Edges from ZMO0199, ZMO1787, and ZMO1876",
+         color = "Protein",
+         edge_alpha = "log10(peak signal)",
+         size = "Regulon Size") +
+    scale_color_manual(values = sos_colors3) +
+    scale_edge_color_manual(values = sos_colors3,
+                            guide = "none") + 
+     scale_x_continuous(expand = expansion(mult = c(0.1, 0.1))))
+               
+```
+
+```{r, fig.height = 5, fig.width = 5}
+(sos_p2 <- graph %>% activate(edges) %>%
+    mutate(selected_edge = to == 1 | to == 4 | to == 5,
+           colors = case_when(to == 1 ~ "ZMO0199",
+                              to == 4 ~ "ZMO1787",
+                              to == 5 ~ "ZMO1876",
+                              TRUE ~ "Other")) %>%
+     activate(nodes) %>%
+     mutate(node_color = 
+                if_else(name %in% c("ZMO0199", "ZMO1787", "ZMO1876"), name,
+                        "Other")) %>%
+    ggraph(layout = 'linear', circular = TRUE) + 
+    geom_edge_arc(aes(filter = selected_edge, color = colors,
+                      alpha = log10(avg_height)), 
+                  arrow = arrow(length = unit(3, "mm")), width = 2,
+                  show.legend = FALSE) + 
+    geom_node_point(aes(label = name, size = Genes_per_TF,
+                        color = node_color)) + 
+    geom_edge_loop(aes(filter = selected_edge, color = colors,
+                       alpha = log10(avg_height)), width = 2,
+                   show.legend = FALSE) +
+    geom_node_text(data = . %>% 
+                       filter(name %in% c("ZMO0199", "ZMO1787", "ZMO1876")),
+                   aes(label = name, color = name), show.legend = FALSE) +
+    theme_classic(base_size = 16) +
+    coord_fixed() +
+     theme(legend.position = "bottom", legend.box = "vertical", 
+           axis.line.x = element_blank(),
+           axis.line.y = element_blank(),
+           axis.ticks.x = element_blank(),
+           axis.ticks.y = element_blank(),
+           axis.text.y = element_blank(),
+           axis.text.x = element_blank()) + 
+    labs(x = "", y = "", 
+         title = "ZMO1876 & ZMO1787 coordinate the SOS-response",
+         subtitle = "Edges to ZMO0199, ZMO1787, and ZMO1876",
+         color = "Protein",
+         edge_alpha = "log10(peak signal)",
+         size = "Regulon Size") +
+    scale_color_manual(values = sos_colors3) +
+    scale_edge_color_manual(values = sos_colors3, guide = "none") +
+     scale_x_continuous(expand = expansion(mult = c(0.1, 0.1))))
+               
+```
+
+```{r, fig.width = 8, fig.height = 12}
+sos_p1/sos_p2 + plot_layout(guides = 'collect') & theme(legend.position = 'bottom', legend.direction = "vertical") & scale_x_continuous(expand = expansion(mult = c(0.2, 0.2)))
+```
+```{r}
+ggsave("sos_connect.pdf", width = 6, height = 12, units = "in") 
+```
+
+
+```{r}
+graph %>% activate(edges) %>%
+    mutate(selected_edge = to == 2 ) %>%
+    ggraph(layout = 'linear', circular = TRUE) + 
+    geom_edge_arc(aes(filter = selected_edge), arrow = arrow(length = unit(3, "mm")))+ 
+    geom_node_point(aes(label = name)) + geom_edge_loop(aes(filter = selected_edge)) +
+    geom_node_text(aes(label = name), repel = TRUE)
+```
+
+```{r}
+overall_network %>% filter(name %in% c("ZMO1876", "ZMO1787", "ZMO0199", "ZMO1336", "ZMO0781") & 
+                               from %in% c("ZMO1876", "ZMO1787", "ZMO0199", "ZMO1336", "ZMO0781") &
+                               to %in% c("ZMO1876", "ZMO1787", "ZMO0199", "ZMO1336", "ZMO0781")
+                               ) %>%
+    as_tbl_graph() %>%
+    ggraph(layout = 'grid')  + geom_node_point() + geom_edge_diagonal(arrow = arrow(length = unit(2, "mm"))) + geom_edge_loop(arrow = arrow())
+```
+    
+
+```{r}
+motifs <- read_tsv("../check_motif_counts/all_motif_matches.tsv")
+head(motifs)
+```
+
+
+```{r, fig.height = 10}
+motifs %>% mutate(frac_bound = motifs_in/(motifs_out + motifs_in)) %>%
+    left_join(md %>% select(locus_tag, simple_name, class) %>%
+                  rename(TF=locus_tag, TF_class = class), by = "TF") %>%
+    mutate(simple_name = fct_reorder(simple_name, frac_bound)) %>%
+    filter(motifs_in > 0 & frac_bound > 0.1) %>%
+    ggplot(aes(x = frac_bound, y = simple_name, fill = TF_class)) + 
+    geom_col() + theme_bw() +
+    scale_fill_manual(values = class_colors) +
+    labs(x = "Fraction of Genome-wide motifs found in TF peaks",
+         y = "",
+         title = "TF peaks capture what fraction of possible motif locations?",
+         subtitle = "Motifs discovered with STREME and found with FIMO",
+         fill = "Protein Class") +
+    theme(legend.position = "bottom") + guides(fill = guide_legend(nrow=2))
+```
+```{r}
+ggsave("motif_per_tf.pdf",
+       width = 5, height = 8, units = "in")
+```
+
+Look at growth conditions TN-seq
+```{r}
+library(readxl)
+```
+
+```{r}
+fitness_per_gene <- read_tsv("../../../2020_vera_promoters/zm4genes.mev")
+head(fitness_per_gene)
+```
+
+```{r}
+library(ggridges)
+```
+
+
+```{r, fig.height = 10}
+fitness_per_gene %>% pivot_longer(`72 Growth in ZRM rich media; Aerobic`:`657 Minimal media with agave as carbon source and only potassium phosphate and sodium chloride added`, values_to = "fitness", names_to = "condition") %>%
+    mutate(TF = sysName %in% (d %>% distinct(TF) %>% pull(TF))) %>%
+    filter(TF) %>%
+    mutate(sysName = fct_reorder(sysName, fitness)) %>%
+    ggplot(aes(x = fitness, y = sysName)) + geom_density_ridges() + theme_bw()
+```
+get experiment groups
+```{r}
+exper_groups <- read_excel("../../../2020_vera_promoters/zjb999093334sd1.xlsx")
+exper_groups
+```
+
+
+```{r, fig.width = 9, fig.height = 9}
+fitness_per_gene %>% pivot_longer(`72 Growth in ZRM rich media; Aerobic`:`657 Minimal media with agave as carbon source and only potassium phosphate and sodium chloride added`, values_to = "fitness", names_to = "condition") %>% 
+    mutate(TF = sysName %in% (d %>% distinct(TF) %>% pull(TF))) %>%
+    #filter(TF) %>%
+    separate(condition, into = c("Experiment number"), sep= " ") %>%
+    mutate(`Experiment number` = as.numeric(`Experiment number`)) %>%
+    left_join(exper_groups, by = "Experiment number") %>%
+    mutate(Group = fct_reorder(Group, fitness)) %>%
+    filter(Group != "nitrogen fixation") %>%
+    mutate(special_name = if_else(sysName %in% c("ZMO1876", "ZMO1787", "ZMO0199"), sysName, "All other genes")) %>%
+    ggplot(aes(x = fitness, y = Group, fill = special_name)) + geom_density_ridges(show.legend = FALSE) + theme_bw(base_size = 18) + geom_vline(xintercept = 0, linetype = "dashed") + facet_wrap(~ special_name) + scale_x_continuous(limits = c(-4, 4)) +
+    scale_fill_manual(values = c(sos_colors3, "All other genes" = "Grey50")) +
+    labs(x = "Fitness relative to start of condition", y = "Type of condition",
+         title = "Phenotypic data support role for ZMO0199\nZMO1787 and ZMO1876 in the SOS-response",
+         subtitle = "Data from Deutschbauer et al. 2014")
+    
+```
+```{r}
+ggsave("phenotypes.pdf", width = 10, height = 10, units = "in")
+```
+
+```{r}
+annots <- read_tsv("ZM4_annotations.tsv") %>% rename(common_name = gene) %>% mutate(gene = str_replace(locus_tag, "ZMO1_", ""))
+annots
+```
+
+
+
+```{r}
+prom_tf_pair %>% filter(TF == "ZMO1787") %>% arrange(-peak_enrichment) %>% left_join(annots %>% select(gene, product), by = "gene") %>% distinct(peak_start, .keep_all = TRUE)
+```
+
+```{r}
+prom_tf_pair %>% filter(TF == "ZMO1876") %>% arrange(-peak_enrichment) %>% left_join(annots %>% select(gene, product, common_name), by = "gene") %>% 
+distinct(gene, .keep_all = TRUE)
+```
+```{r}
+prom_tf_pair %>% filter(TF == "ZMO0199") %>% arrange(-peak_enrichment) %>% left_join(annots %>% select(gene, product, common_name), by = "gene") %>% distinct(peak_start, .keep_all = TRUE)
+```
+```{r}
+prom_tf_pair %>% filter(TF == "ZMO1336") %>% arrange(-peak_enrichment) %>% left_join(annots %>% select(gene, product, common_name), by = "gene") %>% distinct(peak_start, .keep_all = TRUE)
+```
+
+
+```{r}
+prom_tf_pair %>% filter(TF == "ZMO0781") %>% arrange(-peak_enrichment) %>% left_join(annots %>% select(gene, product, common_name), by = "gene") %>% distinct(gene, .keep_all = TRUE)
+```
+
+Let's make an E. coli tf network map
+```{r}
+ecoli_tf_graph <- read_tsv("../../../2020_vera_promoters/ecoli_network_tf_gene.txt", skip = 37, col_names = c("TF_sys", "TF", "Gene_sys", "Gene", "direction", "reg_evidence", "evidence_type"))
+ecoli_tf_graph
+```
+```{r}
+unique_TF <- ecoli_tf_graph %>% distinct(TF) %>% mutate(TF = str_to_lower(TF))
+unique_TF
+```
+
+```{r}
+TF_to_TF <- ecoli_tf_graph %>% filter(str_to_lower(Gene) %in% (unique_TF %>% pull(TF)))
+TF_to_TF
+```
+```{r}
+ecoli_graph <- TF_to_TF %>% select(name = TF, from = TF, to = Gene) %>%
+    as_tbl_graph() %>% 
+    activate(nodes) %>% 
+    mutate(size = local_size(order = 1, mode = "out", mindist = 0)) %>%
+    mutate(type = 
+               if_else(name %in% 
+                           c("CRP", "Lrp", "IHF", "Fis", "FNR", "ArcA", "H-NS"),
+                       "Global", "Local")) %>%
+    mutate(label = if_else(type == "Global", name, ""))
+ecoli_graph
+```
+```{r}
+ecoli_graph %>%
+    activate(edges) %>%
+    mutate(show_edge = 
+               if_else(name %in% 
+                           c("CRP", "Lrp", "IHF", "Fis", "FNR", "ArcA", "H-NS"),
+                       "Global Regulators", "Local Regulators")
+           ) %>%
+    ggraph(layout = "linear", circular = TRUE) +
+    geom_node_point(aes(size = size, color = type)) + 
+    geom_node_text(aes(label = label), nudge_x = 0.3, nudge_y = 0.1) +
+    geom_edge_diagonal(alpha = 0.2,
+        #aes(color= show_edge, alpha = show_edge),
+                       show.legend = FALSE) +
+    coord_fixed() +
+    scale_color_manual(name = "TF Type", values = c("Global" = "#FC766AFF", "Local"= "#2DA8D8FF")) + 
+    scale_edge_color_manual(values = c("TRUE" = "black", "FALSE" = "grey20")) +
+    labs(title = "The E. coli TF-TF regulatory network is complex",
+         size = "# of TFs regulated") +
+    facet_edges(~show_edge) + theme(legend.position = "bottom")
+``` 
+
+```{r}
+ggsave("Ecoli_reg_network.pdf", height = 5, width = 5, units = "in")
+```
+
+
+

@@ -1,0 +1,48 @@
+```{r}
+library(tidyverse)
+```
+
+## Annotate each peak to a promoter
+```{r}
+d <- read_tsv("peak_to_promoters.tsv", col_names = c("chrm", "peak_start", "peak_end", "peak_name", "peak_enrichment", "chrm_prom", "prom_start", "prom_end", "promoter", "prom_value", "prom_strand", "distance")) %>%
+    separate(peak_name, into = c("TF", "peak_id"), sep = "_") %>%
+    mutate(TF = if_else(TF == "ZMO01164", "ZMO1164", TF))
+head(d)
+```
+
+```{r}
+md <- readxl::read_xlsx("../2022_zymo_proteins_data.xlsx")
+md
+```
+
+```{r}
+d <- left_join(d, md %>% select(locus_tag, simple_name, class) %>% rename(TF=locus_tag), by = "TF")
+head(d)
+```
+
+```{r}
+promoter_to_gene <- read_tsv("2020_Vera_promoter_gene_pairs.tsv", col_names = c("promoter", "gene"))
+head(promoter_to_gene)
+```
+
+```{r}
+d <- left_join(d, promoter_to_gene, by = "promoter")
+```
+
+```{r}
+d %>% filter(abs(distance) <= 200) %>% select(-c(peak_id, chrm_prom, prom_value)) %>%
+    write_tsv("DAPseq_peak_to_promoter_mapping.tsv")
+```
+
+## Compare to previous analysis
+```{r}
+d2 <- read_tsv("../2022_DAPseq_custom_analysis/manual_results/peak_to_promoter/DAPseq_peak_to_promoter_mapping.tsv")
+d2
+```
+
+```{r}
+shared <- d %>% select(TF, promoter, distance) %>% mutate(analysis = "new") %>% full_join(d2 %>% select(TF, promoter, distance) %>% mutate(analysis = "old"), c("TF", "promoter"))
+
+shared %>% filter(abs(distance.x) <= 200 | abs(distance.y) <= 200) %>% distinct(TF, promoter, analysis.x, analysis.y) %>%
+    group_by(analysis.x, analysis.y) %>% summarize(n = n())
+```

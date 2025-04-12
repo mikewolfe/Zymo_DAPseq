@@ -1,0 +1,22 @@
+```{r}
+library(tidyverse)
+```
+
+
+```{r}
+d <- read_tsv("ZM4.bed", col_names = c("chrm", "start", "end", "name", "value", "strand"))
+d
+```
+
+
+```{r}
+convert_to_start <- function(x){
+    x %>% mutate(gene_start = if_else(strand == "+", start, end-1)) %>%
+        mutate(gene_end = gene_start + 1)
+}
+```
+
+```{r}
+d %>% convert_to_start() %>% select(chrm, gene_start, gene_end, name, value, strand) %>% arrange(chrm, gene_start, gene_end) %>% 
+    write_tsv("ZM4_gene_starts.bed", col_names = FALSE)
+```

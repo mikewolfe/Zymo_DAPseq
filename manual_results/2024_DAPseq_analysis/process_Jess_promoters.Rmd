@@ -1,0 +1,52 @@
+```{r}
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+d <- read_excel(path = "msystems.00250-20-sd001.xlsx", sheet = "TSSs")
+d %>% pull(Sequence) %>% unique()
+```
+
+```{r}
+convert_common_chrm <- function(chrm_name) {
+    chrm <- c("CP023715.1", "CP023716.1", "CP023717.1",
+                     "CP023718.1", "CP023719.1")
+    
+    names(chrm) <- c("ZM4", "pZM32", "pZM33", "pZM36", "pZM39")
+    unname(chrm[chrm_name])
+}
+```
+
+
+
+```{r}
+d %>% filter(Class == "TSS-Gene pair" | Class == "leaderless" | Class == "TSS-ZmsRNA pair") %>% select(Sequence, Position, Name, Strand, Gene) %>%
+    transmute(chrm = Sequence,
+       # chrm = convert_common_chrm(Sequence), 
+              start = Position -1, 
+              end = Position, name = Name, 
+              value = ".", strand = Strand) %>%
+    write_tsv("2020_Vera_promoter_gene_pairs.bed", col_names = FALSE)
+```
+
+```{r}
+d %>% filter(Class == "TSS-Gene pair"| Class == "leaderless" | Class == "TSS-ZmsRNA pair") %>% select(Name, Gene) %>%
+    write_tsv("2020_Vera_promoter_gene_pairs.tsv", col_names = FALSE)
+```
+
+```{r}
+seq <- read_xlsx("msystems.00250-20-sd002.xlsx", sheet = "Z. mobilis")
+seq
+```
+
+```{r}
+d
+```
+
+```{r}
+seq %>% full_join(d %>% mutate(TSS = Name) %>% select(TSS, `Relative Location`, Gene), by = "TSS") %>% select(-`Figure 5D`) %>%
+    write_tsv("2020_Vera_promoter_elements.tsv")
+```
+
+

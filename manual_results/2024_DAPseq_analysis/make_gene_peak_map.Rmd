@@ -1,0 +1,27 @@
+```{r}
+library(tidyverse)
+```
+
+## Annotate each peak to a promoter
+```{r}
+d <- read_tsv("peak_to_genes.tsv", col_names = c("chrm", "peak_start", "peak_end", "peak_name", "peak_enrichment", "chrm_gene", "gene_start", "gene_end", "gene", "gene_value", "gene_strand", "distance")) %>%
+    separate(peak_name, into = c("TF", "peak_id"), sep = "_") %>%
+    mutate(TF = if_else(TF == "ZMO01164", "ZMO1164", TF))
+head(d)
+```
+
+```{r}
+md <- readxl::read_xlsx("../2022_zymo_proteins_data.xlsx")
+md
+```
+
+```{r}
+d <- left_join(d, md %>% select(locus_tag, simple_name, class) %>% rename(TF=locus_tag), by = "TF")
+head(d)
+```
+
+
+```{r}
+d %>% filter(abs(distance) <= 200) %>% select(-c(peak_id, chrm_gene, gene_value, gene_end)) %>%
+    write_tsv("DAPseq_peak_to_gene_mapping.tsv")
+```
